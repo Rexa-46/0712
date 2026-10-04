@@ -1562,22 +1562,30 @@ function guessExpenseCategoryId(categories, merchant) {
    موتور و دادهٔ زبان فارسی داخل خود برنامه است (public/ocr)؛ بدون اینترنت، بدون کلید API. */
 let _ocrWorkerPromise = null;
 let _ocrProgressCb = null;
+let _ocrCoreIdx = 0;          // اگر هسته‌ی سریع روی گوشی بالا نیامد، به هسته‌ی ساده می‌رویم
+let _ocrDiag = "";            // آخرین مرحله‌ی بارگذاری (برای نمایش در خطا)
 const ocrUrl = (p) => new URL(`ocr/${p}`, document.baseURI).href;
+// پشتیبانی WebAssembly SIMD (هسته‌ی «relaxed» عمداً استفاده نمی‌شود؛ روی بعضی WebViewها گیر می‌کند)
+function ocrSimdOk() {
+  try { return WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11])); } catch { return false; }
+}
+const ocrCores = () => (ocrSimdOk() ? ["tesseract-core-simd-lstm.wasm.js", "tesseract-core-lstm.wasm.js"] : ["tesseract-core-lstm.wasm.js"]);
 function getOcrWorker() {
   if (!_ocrWorkerPromise) {
+    const core = ocrCores()[_ocrCoreIdx] || "tesseract-core-lstm.wasm.js";
     _ocrWorkerPromise = (async () => {
+      _ocrDiag = "شروع";
       const { createWorker } = await import("tesseract.js");
-      const w = await createWorker("fas", 1, {
+      return await createWorker("fas", 1, {
         workerPath: ocrUrl("worker.min.js"),
-        corePath: ocrUrl(""),
+        corePath: ocrUrl(core),
         langPath: ocrUrl("lang"),
         workerBlobURL: false,
         cacheMethod: "none",
         gzip: true,
-        logger: (m) => { try { _ocrProgressCb?.(m); } catch {} },
+        logger: (m) => { _ocrDiag = `${m.status} ${Math.round((m.progress || 0) * 100)}٪`; try { _ocrProgressCb?.(m); } catch {} },
       });
-      return w;
-    })().catch((e) => { _ocrWorkerPromise = null; throw e; });
+    })().catch((e) => { _ocrDiag = `${_ocrDiag} / ${e?.message || e}`; _ocrWorkerPromise = null; throw e; });
   }
   return _ocrWorkerPromise;
 }
@@ -1680,9 +1688,14 @@ async function extractSlip(file, categories, onStatus) {
   onStatus?.("آماده‌سازی تصویر...");
   const canvas = await prepareSlipCanvas(file);
   onStatus?.("آماده‌سازی موتور خواندن متن...");
-  let worker;
-  try { worker = await withTimeout(getOcrWorker(), 45000); }
-  catch (e) { _ocrWorkerPromise = null; throw new Error("بارگذاری موتور خواندن متن طول کشید"); }
+  let worker = null;
+  const cores = ocrCores();
+  for (let k = _ocrCoreIdx; k < cores.length && !worker; k++) {
+    _ocrCoreIdx = k;
+    try { worker = await withTimeout(getOcrWorker(), k === 0 && cores.length > 1 ? 40000 : 90000); }
+    catch (e) { _ocrWorkerPromise = null; }       // این هسته بالا نیامد → هسته‌ی بعدی
+  }
+  if (!worker) { _ocrCoreIdx = 0; throw new Error(`بارگذاری موتور خواندن متن ناموفق بود — مرحله: ${_ocrDiag}`); }
   const run = async (psm, ms) => {
     await worker.setParameters({ tessedit_pageseg_mode: psm, preserve_interword_spaces: "1" });
     try { const { data } = await withTimeout(worker.recognize(canvas), ms); return parseSlipText(data?.text || "", categories); }
