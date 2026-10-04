@@ -1043,36 +1043,38 @@ function BottomNav({ active, setActive, onAdd, hidden = false }) {
     window.visualViewport?.addEventListener("resize", upd);
     return () => { window.removeEventListener("resize", upd); window.visualViewport?.removeEventListener("resize", upd); };
   }, []);
-  // ترتیب از چپ به راست: گزارش‌ها، تراکنش‌ها، (ثبت سریع)، چک‌ها، خانه — آیکن همراه نام، بدون کادر
+  // ترتیب از چپ به راست: گزارش‌ها، تراکنش‌ها، (ثبت سریع)، چک‌ها، خانه — بدون کادر؛ آیکن‌های بزرگ و رنگی
   const items = [
-    { key: "reports", label: "گزارش‌ها", icon: PieChartIcon },
-    { key: "transactions", label: "تراکنش‌ها", icon: Receipt },
-    { key: "__add", label: "ثبت سریع" },
-    { key: "checks", label: "چک‌ها", icon: FileSpreadsheet },
-    { key: "home", label: "خانه", icon: HomeIcon },
+    { key: "reports", label: "گزارش‌ها", icon: PieChartIcon, accent: "#8b5cf6" },
+    { key: "transactions", label: "تراکنش‌ها", icon: Receipt, accent: "#2f7de1" },
+    { key: "__add", label: "ثبت سریع", accent: "#ef4f7a" },
+    { key: "checks", label: "چک‌ها", icon: FileSpreadsheet, accent: "#f59e0b" },
+    { key: "home", label: "خانه", icon: HomeIcon, accent: "#10b981" },
   ];
   if (hidden) return null;
-  const blue = dark ? "#8fb0ff" : "#2f5fe0";
+  const add = items[2];
   return (
     <div dir="ltr" style={{ position: "fixed", left: 0, right: 0, bottom: 0, maxWidth: 480, margin: "0 auto", zIndex: 300, background: t.bg, transform: kbShift ? `translateY(${kbShift}px)` : "none", pointerEvents: kbShift ? "none" : "auto", display: "grid", gridTemplateColumns: "repeat(5, 1fr)", alignItems: "center", padding: "6px calc(4px + env(safe-area-inset-right, 0px)) calc(8px + env(safe-area-inset-bottom, 0px)) calc(4px + env(safe-area-inset-left, 0px))" }}>
       {items.map((it) => it.key === "__add" ? (
-        <button key={it.key} onClick={onAdd} aria-label={it.label} style={{ background: "none", border: "none", padding: 0, height: 58, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3, color: blue, cursor: "pointer", fontFamily: "inherit" }}>
-          <Repeat size={34} strokeWidth={2.4} />
+        <button key={it.key} onClick={onAdd} aria-label={it.label} style={{ ...NAV_BTN_RESET, color: dark ? "#ff8fb0" : add.accent }}>
+          <Repeat size={40} strokeWidth={2.6} style={{ filter: `drop-shadow(0 3px 6px ${add.accent}66)` }} />
           <span style={{ fontSize: 11, fontWeight: 800 }}>{it.label}</span>
         </button>
       ) : <NavBtn key={it.key} it={it} active={active} setActive={setActive} />)}
     </div>
   );
 }
+const NAV_BTN_RESET = { background: "none", border: "none", outline: "none", boxShadow: "none", WebkitTapHighlightColor: "transparent", appearance: "none", WebkitAppearance: "none", padding: 0, height: 62, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3, cursor: "pointer", fontFamily: "inherit" };
 function NavBtn({ it, active, setActive }) {
   const t = useT();
   const dark = t.card === THEME.dark.card;
   const Icon = it.icon; const isActive = active === it.key;
-  const color = isActive ? (dark ? "#8fb0ff" : "#2f5fe0") : (dark ? "#b7c0d6" : "#4a5778");
+  const base = it.accent;
+  const color = isActive ? base : (dark ? `${base}cc` : `${base}b3`);
   return (
-    <button onClick={() => setActive(it.key)} aria-label={it.label} style={{ background: "none", border: "none", padding: 0, height: 58, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3, color, cursor: "pointer", fontFamily: "inherit" }}>
-      <Icon size={30} strokeWidth={2} fill={isActive && it.key === "home" ? "currentColor" : "none"} />
-      <span style={{ fontSize: 11, fontWeight: isActive ? 800 : 600 }}>{it.label}</span>
+    <button onClick={() => setActive(it.key)} aria-label={it.label} style={{ ...NAV_BTN_RESET, color, transform: isActive ? "translateY(-2px)" : "none", transition: "transform .18s ease" }}>
+      <Icon size={isActive ? 34 : 30} strokeWidth={isActive ? 2.3 : 2} fill="currentColor" fillOpacity={isActive ? 0.28 : 0.14} style={{ filter: isActive ? `drop-shadow(0 3px 6px ${base}66)` : "none", transition: "all .18s ease" }} />
+      <span style={{ fontSize: 11, fontWeight: isActive ? 800 : 600, color: isActive ? base : (dark ? "#b7c0d6" : "#5b6785") }}>{it.label}</span>
     </button>
   );
 }
@@ -1575,14 +1577,14 @@ function getOcrWorker() {
     const core = ocrCores()[_ocrCoreIdx] || "tesseract-core-lstm.wasm.js";
     _ocrWorkerPromise = (async () => {
       _ocrDiag = "شروع";
-      const { createWorker } = await import("tesseract.js");
-      return await createWorker("fas", 1, {
+      const [{ createWorker }, langMod] = await Promise.all([import("tesseract.js"), import("./ocrLangFas.js")]);
+      _ocrDiag = "آماده‌سازی داده‌ی زبان";
+      const fasData = Uint8Array.from(atob(langMod.default), (c) => c.charCodeAt(0));   // داده‌ی زبان داخل خود برنامه است
+      return await createWorker([{ code: "fas", data: fasData }], 1, {
         workerPath: ocrUrl("worker.min.js"),
         corePath: ocrUrl(core),
-        langPath: ocrUrl("lang"),
         workerBlobURL: false,
         cacheMethod: "none",
-        gzip: true,
         logger: (m) => { _ocrDiag = `${m.status} ${Math.round((m.progress || 0) * 100)}٪`; try { _ocrProgressCb?.(m); } catch {} },
       });
     })().catch((e) => { _ocrDiag = `${_ocrDiag} / ${e?.message || e}`; _ocrWorkerPromise = null; throw e; });
@@ -1783,30 +1785,55 @@ const readJson = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k) 
 const writeJson = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 const withTimeout = (promise, ms) => Promise.race([promise, new Promise((_, rej) => setTimeout(() => rej(new Error("زمان اتصال تمام شد")), ms))]);
 
-async function fetchOnlineSentence(usedIds = []) {
-  const page = 1 + Math.floor(Math.random() * 3);
-  const url = `https://tatoeba.org/en/api_v0/search?from=eng&to=pes&trans_filter=limit&trans_to=pes&sort=random&orphans=no&unapproved=no&page=${page}`;
-  let status, data;
+let _sentenceErr = "";
+async function httpGetJson(url, ms = 7000) {
   if (Capacitor.isNativePlatform()) {
-    const r = await CapacitorHttp.get({ url, headers: { Accept: "application/json" }, connectTimeout: 6000, readTimeout: 8000 });
-    status = r.status; data = typeof r.data === "string" ? JSON.parse(r.data) : r.data;
-  } else {
-    const r = await fetch(url, { headers: { Accept: "application/json" } });
-    status = r.status; data = await r.json().catch(() => ({}));
+    const r = await CapacitorHttp.get({ url, headers: { Accept: "application/json" }, connectTimeout: ms, readTimeout: ms });
+    if (r.status < 200 || r.status >= 300) throw new Error(`HTTP ${r.status}`);
+    return typeof r.data === "string" ? JSON.parse(r.data) : r.data;
   }
-  if (status < 200 || status >= 300) throw new Error(`خطای سرور (${status})`);
-  const used = new Set(usedIds);
+  const r = await withTimeout(fetch(url, { headers: { Accept: "application/json" } }), ms);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return await r.json();
+}
+const okEnglish = (en) => { const w = en.trim().split(/\s+/).length; return w >= 4 && w <= 16 && /^[A-Za-z]/.test(en) && !/[0-9@#<>]/.test(en); };
+// منبع ۱: Tatoeba (جمله‌ی انگلیسی + ترجمه‌ی فارسی)، اول بدون کلمه، بعد با یک کلمه‌ی عمومی تصادفی
+async function sentenceFromTatoeba(used, word) {
+  const q = new URLSearchParams({ from: "eng", to: "pes", query: word || "", trans_filter: "limit", trans_to: "pes", sort: "random", orphans: "no", unapproved: "no" });
+  const data = await httpGetJson(`https://tatoeba.org/en/api_v0/search?${q.toString()}`);
   const options = [];
   for (const it of data?.results || []) {
     const en = String(it?.text || "").trim();
-    const words = en.split(/\s+/).length;
-    if (words < 4 || words > 14 || !/^[A-Za-z]/.test(en) || /[0-9@#]/.test(en) || used.has(it.id)) continue;
+    if (!okEnglish(en) || used.has(it.id)) continue;
     const fa = (it.translations || []).flat().find((tr) => tr?.lang === "pes" && String(tr.text || "").trim());
-    if (!fa) continue;
-    options.push({ id: it.id, en, faPron: "", fa: String(fa.text).trim() });
+    if (fa) options.push({ id: it.id, en, faPron: "", fa: String(fa.text).trim() });
   }
-  if (!options.length) throw new Error("جمله‌ی مناسبی پیدا نشد");
+  if (!options.length) throw new Error("نتیجه‌ای نبود");
   return options[Math.floor(Math.random() * options.length)];
+}
+// منبع ۲: یک جمله‌ی انگلیسی تصادفی از dummyjson + ترجمه‌ی فارسی با MyMemory (هر دو رایگان و بدون کلید)
+async function sentenceFromQuoteApi(used) {
+  for (let i = 0; i < 4; i++) {
+    const q = await httpGetJson("https://dummyjson.com/quotes/random");
+    const en = String(q?.quote || "").trim();
+    if (!okEnglish(en) || used.has(`q${q.id}`)) continue;
+    const tr = await httpGetJson(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(en)}&langpair=en|fa`);
+    const fa = String(tr?.responseData?.translatedText || "").trim();
+    if (!fa || /MYMEMORY|QUERY LENGTH/i.test(fa)) throw new Error("ترجمه‌ای نبود");
+    return { id: `q${q.id}`, en, faPron: "", fa };
+  }
+  throw new Error("جمله‌ی مناسبی نبود");
+}
+async function fetchOnlineSentence(usedIds = []) {
+  const used = new Set(usedIds);
+  const WORDS = ["you", "I", "we", "they", "he", "she", "what", "where", "when", "how", "why", "can", "want", "like", "need", "go", "come", "make", "know", "think", "today", "tomorrow", "friend", "work", "home", "water", "time", "good", "very", "please"];
+  const word = WORDS[Math.floor(Math.random() * WORDS.length)];
+  const errs = [];
+  for (const [name, fn] of [["tatoeba", () => sentenceFromTatoeba(used, "")], ["tatoeba-word", () => sentenceFromTatoeba(used, word)], ["quote", () => sentenceFromQuoteApi(used)]]) {
+    try { return await withTimeout(fn(), 9000); } catch (e) { errs.push(`${name}: ${e?.message || e}`); }
+  }
+  _sentenceErr = errs.join(" | ");
+  throw new Error(_sentenceErr);
 }
 
 // جمله امروز؛ اگر اینترنت نبود null (برنامه بدون نمایش جمله وارد می‌شود)
@@ -1820,7 +1847,7 @@ function resolveTodaySentence() {
     if (cache && cache.date === today && cache.en) return cache;
     const ids = readJson(AI_SENTENCE_HISTORY, []);
     try {
-      const pick = await withTimeout(fetchOnlineSentence(ids), 8000);
+      const pick = await withTimeout(fetchOnlineSentence(ids), 28000);
       writeJson(AI_SENTENCE_HISTORY, [...ids, pick.id].slice(-300));
       const out = { date: today, ...pick, source: "online" };
       writeJson(AI_SENTENCE_CACHE, out);
@@ -1837,6 +1864,7 @@ function DailySentenceSplash({ onDone }) {
   const faMean = sentence?.fa || "";
   const [speaking, setSpeaking] = useState(false);
   const [fading, setFading] = useState(false);
+  const [failMsg, setFailMsg] = useState("");
   const timers = useRef([]);
   const finished = useRef(false);
   const speakId = useRef(0);
@@ -1903,7 +1931,7 @@ function DailySentenceSplash({ onDone }) {
 
   useEffect(() => {
     let alive = true;
-    resolveTodaySentence().then((r) => { if (!alive) return; if (r) setSentence(r); else leave(); }).catch(() => { if (alive) leave(); });
+    resolveTodaySentence().then((r) => { if (!alive) return; if (r) setSentence(r); else { setFailMsg(_sentenceErr || "اینترنت در دسترس نیست"); later(leave, 4500); } }).catch(() => { if (alive) leave(); });
     return () => { alive = false; clearTimers(); try { window.speechSynthesis?.cancel(); } catch {} try { if (Capacitor.isNativePlatform()) TextToSpeech.stop(); } catch {} };
     // eslint-disable-next-line
   }, []);
@@ -1924,7 +1952,8 @@ function DailySentenceSplash({ onDone }) {
       <div style={{ fontSize: 12.5, fontWeight: 700, opacity: 0.8, letterSpacing: 0.5, marginBottom: 22 }}>جمله روز انگلیسی</div>
       <div style={{ fontSize: 40, marginBottom: 18, animation: speaking ? "rexaPulse 1s ease-in-out infinite" : "none" }}>🔊</div>
       {!sentence ? (
-        <div style={{ fontSize: 14, fontWeight: 600, opacity: 0.85, textAlign: "center" }}>در حال آماده‌سازی جمله امروز...</div>
+        failMsg ? <div style={{ fontSize: 12.5, fontWeight: 600, opacity: 0.9, textAlign: "center", lineHeight: 1.9, maxWidth: 340, direction: "ltr" }}>جمله‌ی امروز از اینترنت گرفته نشد<br />{failMsg}</div>
+        : <div style={{ fontSize: 14, fontWeight: 600, opacity: 0.85, textAlign: "center" }}>در حال آماده‌سازی جمله امروز...</div>
       ) : (<>
         <div style={{ direction: "ltr", textAlign: "center", fontSize: 26, fontWeight: 800, lineHeight: 1.45, maxWidth: 360 }}>{en}</div>
         {faPron ? <div style={{ marginTop: 16, fontSize: 15, fontWeight: 600, color: "#e8dcf5", textAlign: "center", lineHeight: 1.8, maxWidth: 340 }}>{faPron}</div> : null}
