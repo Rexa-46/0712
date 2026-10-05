@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef, startTransition } from "react";
 import { createPortal } from "react-dom";
 import {
   Bell, Menu, Plus, X, Search, ChevronDown, ChevronLeft, ChevronRight,
@@ -10,13 +10,14 @@ import {
   Eye, EyeOff, StickyNote, Mic, LayoutGrid, LayoutList, ArrowUp, ArrowDown,
   DollarSign, RefreshCw, Sparkles, Type, Target, Fingerprint, Pencil, RotateCcw, Eraser,
   Fuel, ShoppingCart, Zap, Car, Pill, HandCoins, Shirt, Wifi, Smartphone, Drama, Gift, Wrench,
-  Banknote, Building2, Droplets, Bus, CarTaxiFront, ConciergeBell, Minus, Utensils
+  Banknote, Building2, Droplets, Bus, CarTaxiFront, ConciergeBell, Minus, Utensils,
+  ClipboardList, BarChart3, Scale, ScrollText, Wallet
 } from "lucide-react";
 import {
   PieChart, Pie, Cell, Sector, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip,
   LineChart, Line, CartesianGrid
 } from "recharts";
-import * as XLSX from "xlsx";
+import { exportDocXlsx, exportDocPdf } from "./exportDoc.js";
 import { Capacitor, CapacitorHttp } from "@capacitor/core";
 import { App as CapacitorApp } from "@capacitor/app";
 import { Filesystem, Directory, Encoding } from "@capacitor/filesystem";
@@ -274,6 +275,7 @@ const FONT = "'Vazirmatn', Tahoma, 'Segoe UI', sans-serif";
 // when this same code runs as a standalone deployed app / APK build.
 const hasCloudStorage = typeof window !== "undefined" && window.storage && typeof window.storage.get === "function";
 async function loadKey(key, fallback, shared) {
+  flushSaves();
   try {
     if (hasCloudStorage) {
       const res = await window.storage.get(key, !!shared);
@@ -283,11 +285,32 @@ async function loadKey(key, fallback, shared) {
     return raw ? JSON.parse(raw) : fallback;
   } catch { return fallback; }
 }
+// ذخیره‌ی دسته‌ای: نوشتن‌های پشت‌سرهم یکی می‌شوند و بیرون از لحظه‌ی کلیک انجام می‌شوند (ثبت تراکنش دیگر هنگ نمی‌کند)
+const _saveQueue = new Map();
+let _saveTimer = null;
+function flushSaves() {
+  clearTimeout(_saveTimer); _saveTimer = null;
+  for (const [key, { value, shared }] of _saveQueue) {
+    try {
+      if (hasCloudStorage) window.storage.set(key, JSON.stringify(value), !!shared);
+      else window.localStorage.setItem(key, JSON.stringify(value));
+    } catch (e) { console.error("save fail", e); }
+  }
+  _saveQueue.clear();
+}
 async function saveKey(key, value, shared) {
-  try {
-    if (hasCloudStorage) { await window.storage.set(key, JSON.stringify(value), !!shared); }
-    else { window.localStorage.setItem(key, JSON.stringify(value)); }
-  } catch (e) { console.error("save fail", e); }
+  _saveQueue.set(key, { value, shared });
+  clearTimeout(_saveTimer);
+  // نوشتن سنگین (JSON.stringify همه‌ی تراکنش‌ها) در زمان بیکاری انجام می‌شود تا کلیک‌ها هنگ نکنند
+  _saveTimer = setTimeout(() => {
+    if (typeof requestIdleCallback === "function") requestIdleCallback(flushSaves, { timeout: 3000 });
+    else flushSaves();
+  }, 900);
+}
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", flushSaves);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flushSaves(); });
+  try { CapacitorApp.addListener("pause", flushSaves); } catch {}
 }
 
 /* ---------------------------------------------------------
@@ -1571,10 +1594,10 @@ const ocrUrl = (p) => new URL(`ocr/${p}`, document.baseURI).href;
 function ocrSimdOk() {
   try { return WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11])); } catch { return false; }
 }
-const ocrCores = () => (ocrSimdOk() ? ["tesseract-core-simd-lstm.wasm.js", "tesseract-core-lstm.wasm.js"] : ["tesseract-core-lstm.wasm.js"]);
+const ocrCores = () => ["tesseract-core-simd-lstm.wasm.js"];   // فقط هسته‌ی SIMD (حجم کمتر)؛ گوشی‌های امروزی همگی پشتیبانی می‌کنند
 function getOcrWorker() {
   if (!_ocrWorkerPromise) {
-    const core = ocrCores()[_ocrCoreIdx] || "tesseract-core-lstm.wasm.js";
+    const core = ocrCores()[0];
     _ocrWorkerPromise = (async () => {
       _ocrDiag = "شروع";
       const [{ createWorker }, langMod] = await Promise.all([import("tesseract.js"), import("./ocrLangFas.js")]);
@@ -1697,7 +1720,7 @@ async function extractSlip(file, categories, onStatus) {
     try { worker = await withTimeout(getOcrWorker(), k === 0 && cores.length > 1 ? 40000 : 90000); }
     catch (e) { _ocrWorkerPromise = null; }       // این هسته بالا نیامد → هسته‌ی بعدی
   }
-  if (!worker) { _ocrCoreIdx = 0; throw new Error(`بارگذاری موتور خواندن متن ناموفق بود — مرحله: ${_ocrDiag}`); }
+  if (!worker) { _ocrCoreIdx = 0; throw new Error(ocrSimdOk() ? `بارگذاری موتور خواندن متن ناموفق بود — مرحله: ${_ocrDiag}` : "این گوشی از موتور خواندن متن پشتیبانی نمی‌کند (WebView قدیمی؛ آن را به‌روزرسانی کنید)"); }
   const run = async (psm, ms) => {
     await worker.setParameters({ tessedit_pageseg_mode: psm, preserve_interword_spaces: "1" });
     try { const { data } = await withTimeout(worker.recognize(canvas), ms); return parseSlipText(data?.text || "", categories); }
@@ -2127,16 +2150,17 @@ export default function App() {
   const catById = useCallback((id) => categories.find((c) => c.id === id), [categories]);
   const accById = useCallback((id) => accounts.find((a) => a.id === id), [accounts]);
 
-  const accountBalance = useCallback((accId) => {
-    const acc = accById(accId); if (!acc) return 0;
-    let bal = acc.initial || 0;
+  const balanceMap = useMemo(() => {
+    const m = {};
+    accounts.forEach((a) => { m[a.id] = a.initial || 0; });
     transactions.forEach((t) => {
-      if (t.type === "expense" && t.accountId === accId) bal -= t.amount;
-      if (t.type === "income" && t.accountId === accId) bal += t.amount;
-      if (t.type === "transfer") { if (t.accountId === accId) bal -= t.amount; if (t.toAccountId === accId) bal += t.amount; }
+      if (t.type === "expense" && t.accountId in m) m[t.accountId] -= t.amount;
+      else if (t.type === "income" && t.accountId in m) m[t.accountId] += t.amount;
+      else if (t.type === "transfer") { if (t.accountId in m) m[t.accountId] -= t.amount; if (t.toAccountId in m) m[t.toAccountId] += t.amount; }
     });
-    return bal;
-  }, [accounts, transactions, accById]);
+    return m;
+  }, [accounts, transactions]);
+  const accountBalance = useCallback((accId) => balanceMap[accId] || 0, [balanceMap]);
 
   const totalBalance = useMemo(() => accounts.reduce((s, a) => s + accountBalance(a.id), 0), [accounts, accountBalance]);
   const totalAssets = useMemo(() => assets.reduce((s, a) => s + (a.quantity * a.currentPrice || 0), 0), [assets]);
@@ -2168,28 +2192,27 @@ export default function App() {
 
   // net worth trend: last 8 months
   const netWorthTrend = useMemo(() => {
-    const points = [];
-    for (let i = 7; i >= 0; i--) {
-      const d = new Date(); d.setMonth(d.getMonth() - i);
-      const cutoff = d.toISOString().slice(0, 10);
-      let bal = accounts.reduce((s, a) => s + (a.initial || 0), 0);
-      transactions.forEach((t) => {
-        if (t.date > cutoff) return;
-        if (t.type === "expense") bal -= t.amount;
-        if (t.type === "income") bal += t.amount;
-      });
-      points.push({ name: faMonthYear(d).split(" ")[0], مانده: bal });
+    const cutoffs = [], labels = [];
+    for (let i = 7; i >= 0; i--) { const d = new Date(); d.setMonth(d.getMonth() - i); cutoffs.push(d.toISOString().slice(0, 10)); labels.push(faMonthYear(d).split(" ")[0]); }
+    const base = accounts.reduce((s, a) => s + (a.initial || 0), 0);
+    const bins = new Array(cutoffs.length).fill(0);       // یک بار عبور از تراکنش‌ها (قبلاً ۸ بار)
+    for (const t of transactions) {
+      const dlt = t.type === "expense" ? -t.amount : t.type === "income" ? t.amount : 0;
+      if (!dlt) continue;
+      for (let k = 0; k < cutoffs.length; k++) { if (t.date <= cutoffs[k]) { bins[k] += dlt; break; } }
     }
-    return points;
+    let run = base;
+    return cutoffs.map((_, k) => { run += bins[k]; return { name: labels[k], مانده: run }; });
   }, [accounts, transactions]);
 
+  // بسته شدن فرم فوری انجام می‌شود؛ محاسبه‌ی سنگین‌ِ گزارش‌ها بعدش و بدون قفل کردن صفحه
   function addTransaction(tx) {
-    setTransactions((p) => [{ ...tx, id: uid(), createdAt: new Date().toISOString() }, ...p]);
+    startTransition(() => setTransactions((p) => [{ ...tx, id: uid(), createdAt: new Date().toISOString() }, ...p]));
   }
   function updateTransaction(id, patch) {
-    setTransactions((p) => p.map((t) => t.id === id ? { ...t, ...patch, updatedAt: new Date().toISOString() } : t));
+    startTransition(() => setTransactions((p) => p.map((t) => t.id === id ? { ...t, ...patch, updatedAt: new Date().toISOString() } : t)));
   }
-  function deleteTransaction(id) { setTransactions((p) => p.filter((t) => t.id !== id)); }
+  function deleteTransaction(id) { startTransition(() => setTransactions((p) => p.filter((t) => t.id !== id))); }
   function addAccount(a) { const item = { ...a, id: a.id || uid() }; setAccounts((p) => [...p, item]); return item.id; }
   function deleteAccount(id) { setAccounts((p) => p.filter((a) => a.id !== id)); }
   function updateAccount(id, patch) { setAccounts((p) => p.map((a) => a.id === id ? { ...a, ...patch } : a)); }
@@ -2320,16 +2343,12 @@ export default function App() {
     if (Date.now() - last > 6 * 3600 * 1000) checkUpdateNow(false);
   }, [loaded]);
   function exportExcel() {
-    const rows = transactions.map((t) => ({
-      نوع: t.type === "expense" ? "پرداخت" : t.type === "income" ? "دریافت" : "انتقال",
-      مبلغ: t.amount, تاریخ: t.date,
-      دسته: catById(t.categoryId)?.name || "", حساب: accById(t.accountId)?.name || "",
-      برچسب: (t.tags || []).join("، "), یادداشت: t.note || "",
-    }));
-    const ws = XLSX.utils.json_to_sheet(rows);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "تراکنش‌ها");
-    XLSX.writeFile(wb, `transactions-${todayISO()}.xlsx`);
+    const typeFa = (t) => (t.type === "expense" ? "پرداخت" : t.type === "income" ? "دریافت" : "انتقال");
+    const doc = {
+      title: `تراکنش‌ها ${todayISO()}`, subtitle: "همه‌ی تراکنش‌ها",
+      sections: [{ head: ["نوع", "مبلغ", "تاریخ", "دسته", "حساب", "برچسب", "یادداشت"], rows: transactions.map((t) => [typeFa(t), t.amount, jf(t.date), catById(t.categoryId)?.name || "", accById(t.accountId)?.name || "", (t.tags || []).join("، "), t.note || ""]) }],
+    };
+    exportDocXlsx(doc).catch((e) => alert("خروجی Excel گرفته نشد: " + (e?.message || e)));
   }
 
   const performExit = useCallback(async () => {
@@ -2513,6 +2532,7 @@ export default function App() {
                 expenseByMember={expenseByMember} expenseByEvent={expenseByEvent} expenseByProject={expenseByProject}
                 categories={categories} checks={checks} debts={debts} totalAssets={totalAssets} currency={settings.currency} usdRate={rates?.usd}
                 transactions={transactions} updateAccount={updateAccount}
+                members={members} events={events} projects={projects} loans={loans} assets={assets} bills={bills}
               />
             )}
           </div>
@@ -3038,8 +3058,417 @@ function OperationsView({ setSubView, onAdd }) {
    Reports View
 --------------------------------------------------------- */
 const PIE_COLORS = ["#B01E4A", "#6C3FA0", "#4E9AA0", "#A98A3B", "#3E1461", "#1E8449", "#A65475", "#555"];
-function ReportsView({ categories = [], expenseByCategory, incomeByCategory, totalIncomeYear, totalExpenseYear, accounts, accountBalance, updateAccount, netWorthTrend, exportExcel, expenseByMember, expenseByEvent, expenseByProject, checks = [], debts = [], totalAssets = 0, currency, usdRate, transactions = [] }) {
+/* ---------------------------------------------------------
+   گزارش‌های جدید: خلاصه، هزینه/درآمد با نمودار، مانده حساب‌ها، صورتحساب، ترازنامه
+   هر گزارش یک «سند» می‌سازد که هم روی صفحه نمایش داده می‌شود و هم به Excel و PDF می‌رود.
+--------------------------------------------------------- */
+const jf = (iso) => { try { return new Intl.DateTimeFormat("fa-IR", { year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(iso)); } catch { return iso; } };
+const ACC_TYPE_FA = { bank: "بانک", card: "کارت", fund: "صندوق", cash: "نقد" };
+const accTypeFa = (ty) => ACC_TYPE_FA[ty] || "حساب";
+const isoOf = (d) => (d ? d.toISOString().slice(0, 10) : todayISO());
+function reportRange(kind, from, to) {
+  const today = todayISO();
+  if (kind === "day") return { from: today, to: today };
+  if (kind === "week") return { from: addDays(today, -6), to: today };
+  if (kind === "month" || kind === "year") {
+    const p = jalaliParts(new Date(today));
+    return { from: isoOf(findJalaliMonthStart(p.y, kind === "year" ? 1 : p.m)), to: today };
+  }
+  const a = from || today, b = to || today;
+  return a <= b ? { from: a, to: b } : { from: b, to: a };
+}
+const RANGE_KINDS = [["day", "امروز"], ["week", "هفتگی"], ["month", "ماهیانه"], ["year", "سالیانه"], ["custom", "بازه دلخواه"]];
+function useRangeState(initial = "month") {
+  const [kind, setKind] = useState(initial);
+  const [from, setFrom] = useState(todayISO());
+  const [to, setTo] = useState(todayISO());
+  return { kind, setKind, from, setFrom, to, setTo, range: reportRange(kind, from, to) };
+}
+function txDelta(tx, accId) {
+  if (tx.type === "expense" && tx.accountId === accId) return -tx.amount;
+  if (tx.type === "income" && tx.accountId === accId) return tx.amount;
+  if (tx.type === "transfer") return (tx.accountId === accId ? -tx.amount : 0) + (tx.toAccountId === accId ? tx.amount : 0);
+  return 0;
+}
+const balanceAtDate = (acc, txs, iso) => txs.reduce((b, tx) => (tx.date <= iso ? b + txDelta(tx, acc.id) : b), acc.initial || 0);
+function accountFlow(acc, txs, from, to) {
+  const f = { income: 0, expense: 0, tin: 0, tout: 0, count: 0 };
+  for (const tx of txs) {
+    if (tx.date < from || tx.date > to) continue;
+    if (tx.type === "income" && tx.accountId === acc.id) { f.income += tx.amount; f.count++; }
+    else if (tx.type === "expense" && tx.accountId === acc.id) { f.expense += tx.amount; f.count++; }
+    else if (tx.type === "transfer") {
+      if (tx.accountId === acc.id) { f.tout += tx.amount; f.count++; }
+      if (tx.toAccountId === acc.id) { f.tin += tx.amount; f.count++; }
+    }
+  }
+  return f;
+}
+
+function RangePicker({ rs }) {
+  const st = useStyles(); const t = useT();
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+        {RANGE_KINDS.map(([k, l]) => (
+          <button key={k} onClick={() => rs.setKind(k)} style={{ padding: "7px 12px", borderRadius: 18, border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, background: rs.kind === k ? BRAND.header : t.input, color: rs.kind === k ? "#fff" : t.text }}>{l}</button>
+        ))}
+      </div>
+      {rs.kind === "custom" && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div><label style={st.label}>از تاریخ</label><JalaliDateInput value={rs.from} onChange={rs.setFrom} style={st.input} /></div>
+          <div><label style={st.label}>تا تاریخ</label><JalaliDateInput value={rs.to} onChange={rs.setTo} style={st.input} /></div>
+        </div>
+      )}
+      <div style={{ fontSize: 12, color: t.sub }}>بازه‌ی گزارش: {jf(rs.range.from)} تا {jf(rs.range.to)}</div>
+    </div>
+  );
+}
+function AccountPicker({ accounts, value, onChange, allowAll = false, label = "حساب" }) {
+  const st = useStyles(); const t = useT(); const [open, setOpen] = useState(false);
+  const cur = value === "__all" ? "همه حساب‌ها" : accounts.find((a) => a.id === value)?.name || "انتخاب حساب";
+  const options = [...(allowAll ? [{ id: "__all", name: "همه حساب‌ها", sub: "" }] : []), ...accounts.map((a) => ({ id: a.id, name: a.name, sub: accTypeFa(a.type) }))];
+  return (
+    <>
+      <label style={st.label}>{label}</label>
+      <button type="button" onClick={() => setOpen(true)} style={{ ...st.input, textAlign: "right", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", fontFamily: "inherit" }}>
+        <span>{cur}</span><ChevronDown size={16} />
+      </button>
+      {open && (
+        <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.45)", zIndex: 500, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: t.card, width: "100%", maxWidth: 480, maxHeight: "70vh", overflowY: "auto", borderRadius: "20px 20px 0 0", padding: 16 }}>
+            <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 10 }}>انتخاب حساب (فقط یکی)</div>
+            {options.map((o) => {
+              const on = o.id === value;
+              return (
+                <button key={o.id} type="button" onClick={() => { onChange(o.id); setOpen(false); }} style={{ width: "100%", display: "flex", alignItems: "center", gap: 12, padding: "12px 6px", border: "none", borderBottom: `1px solid ${t.border}`, background: "transparent", cursor: "pointer", fontFamily: "inherit", color: t.text, textAlign: "right" }}>
+                  <span style={{ width: 20, height: 20, borderRadius: "50%", border: `2px solid ${on ? BRAND.header : t.sub}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{on && <span style={{ width: 10, height: 10, borderRadius: "50%", background: BRAND.header }} />}</span>
+                  <span style={{ flex: 1, fontSize: 14.5, fontWeight: on ? 800 : 600 }}>{o.name}</span>
+                  {o.sub && <span style={{ fontSize: 12, color: t.sub }}>{o.sub}</span>}
+                </button>
+              );
+            })}
+            {!options.length && <div style={{ color: t.sub, textAlign: "center", padding: 14 }}>حسابی تعریف نشده است</div>}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+function ExportBar({ doc }) {
+  const st = useStyles(); const [busy, setBusy] = useState(""); const [msg, setMsg] = useState("");
+  const run = async (kind) => {
+    if (busy || !doc) return;
+    setBusy(kind); setMsg("");
+    try { await (kind === "xlsx" ? exportDocXlsx : exportDocPdf)(doc); }
+    catch (e) { if (!/cancel/i.test(String(e?.message || e))) setMsg("خروجی گرفته نشد: " + (e?.message || e)); }
+    setBusy("");
+  };
+  const b = (bg) => ({ ...st.primaryBtn, background: bg, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, opacity: busy ? 0.7 : 1 });
+  return (
+    <div className="no-print" style={{ marginBottom: 14 }}>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={() => run("xlsx")} style={b(BRAND.green)}><FileSpreadsheet size={16} /> {busy === "xlsx" ? "در حال ساخت..." : "خروجی Excel"}</button>
+        <button onClick={() => run("pdf")} style={b("#555")}><Printer size={16} /> {busy === "pdf" ? "در حال ساخت..." : "خروجی PDF"}</button>
+      </div>
+      {msg && <div style={{ marginTop: 8, fontSize: 12.5, color: BRAND.crimson, fontWeight: 700 }}>{msg}</div>}
+    </div>
+  );
+}
+function DocView({ doc, maxRows = 300 }) {
+  const t = useT(); const st = useStyles();
+  return (
+    <>
+      {(doc?.sections || []).map((sec, i) => {
+        const ncol = sec.head ? sec.head.length : Math.max(1, ...sec.rows.map((r) => r.length));
+        const rows = sec.rows.slice(0, maxRows);
+        return (
+          <div key={i} style={{ ...st.card, padding: 12, marginBottom: 14 }}>
+            {sec.title && <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 8 }}>{sec.title}</div>}
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, minWidth: ncol > 4 ? ncol * 92 : undefined }}>
+                {sec.head && <thead><tr>{sec.head.map((h, k) => <th key={k} style={{ textAlign: "right", padding: "8px 6px", background: t.input, color: t.text, fontWeight: 800, whiteSpace: "nowrap" }}>{h}</th>)}</tr></thead>}
+                <tbody>
+                  {rows.map((r, ri) => (
+                    <tr key={ri} style={{ borderBottom: `1px solid ${t.border}` }}>
+                      {r.map((v, ci) => {
+                        const num = typeof v === "number";
+                        return <td key={ci} style={{ padding: "8px 6px", textAlign: "right", color: num ? (v < 0 ? BRAND.crimson : BRAND.darkgreen) : t.text, fontWeight: num ? 700 : 500, whiteSpace: num ? "nowrap" : "normal" }}>{num ? toFaInt(v) : v}</td>;
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {!sec.rows.length && <div style={{ textAlign: "center", color: t.sub, fontSize: 12, padding: 10 }}>موردی نیست</div>}
+            {sec.rows.length > maxRows && <div style={{ textAlign: "center", color: t.sub, fontSize: 12, padding: 8 }}>{toFaInt(maxRows)} ردیف اول از {toFaInt(sec.rows.length)} نمایش داده شد؛ فایل Excel/PDF همه‌ی ردیف‌ها را دارد.</div>}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+function PieBlock({ title, data, color }) {
+  const t = useT(); const st = useStyles();
+  const total = data.reduce((s, d) => s + d.amount, 0);
+  return (
+    <div style={{ ...st.card, padding: 12, marginBottom: 14 }}>
+      <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 4, color }}>{title}: {toFaInt(total)} ریال</div>
+      {!data.length ? <div style={{ textAlign: "center", color: t.sub, fontSize: 12.5, padding: 18 }}>در این بازه موردی نیست</div> : (
+        <>
+          <ResponsiveContainer width="100%" height={190}>
+            <PieChart>
+              <Pie data={data} dataKey="amount" nameKey="name" innerRadius={48} outerRadius={80} paddingAngle={2} stroke="none" isAnimationActive={false}>
+                {data.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+              </Pie>
+            </PieChart>
+          </ResponsiveContainer>
+          {data.map((d, i) => (
+            <div key={d.name + i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 2px", borderTop: `1px solid ${t.border}` }}>
+              <span style={{ width: 10, height: 10, borderRadius: "50%", background: PIE_COLORS[i % PIE_COLORS.length], flexShrink: 0 }} />
+              <span style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{d.name}</span>
+              <span style={{ fontSize: 11.5, color: t.sub }}>{faDigits(Math.round((d.amount / total) * 100))}٪</span>
+              <span style={{ fontSize: 13, fontWeight: 800, color }}>{toFaInt(d.amount)}</span>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+const catTotals = (txs, type, categories) => {
+  const map = {};
+  txs.forEach((tx) => { if (tx.type === type) { const n = categories.find((c) => c.id === tx.categoryId)?.name || "بدون دسته"; map[n] = (map[n] || 0) + tx.amount; } });
+  return Object.entries(map).map(([name, amount]) => ({ name, amount })).sort((a, b) => b.amount - a.amount);
+};
+const pctText = (v, total) => `${faDigits(total ? Math.round((v / total) * 100) : 0)}٪`;
+
+function SummaryReport({ accounts, transactions, categories }) {
+  const st = useStyles(); const t = useT();
+  const rs = useRangeState("month");
+  const [accId, setAccId] = useState(accounts[0]?.id || null);
+  const acc = accounts.find((a) => a.id === accId);
+  const { from, to } = rs.range;
+  const data = useMemo(() => {
+    if (!acc) return null;
+    const opening = balanceAtDate(acc, transactions, addDays(from, -1));
+    const f = accountFlow(acc, transactions, from, to);
+    const closing = opening + f.income + f.tin - f.expense - f.tout;
+    const cats = catTotals(transactions.filter((x) => x.accountId === acc.id && x.date >= from && x.date <= to), "expense", categories);
+    return { opening, f, closing, cats };
+  }, [acc, transactions, categories, from, to]);
+  const doc = data && {
+    title: `خلاصه گزارش - ${acc.name}`, subtitle: `از ${jf(from)} تا ${jf(to)}`,
+    sections: [
+      { title: "خلاصه", rows: [["مانده ابتدای دوره", data.opening], ["جمع دریافت‌ها", data.f.income], ["جمع پرداخت‌ها", -data.f.expense], ["انتقال به این حساب", data.f.tin], ["انتقال از این حساب", -data.f.tout], ["مانده پایان دوره", data.closing], ["تعداد تراکنش", toFaInt(data.f.count)]] },
+      { title: "هزینه به تفکیک دسته", head: ["دسته", "مبلغ", "درصد"], rows: data.cats.map((c) => [c.name, c.amount, pctText(c.amount, data.f.expense)]) },
+    ],
+  };
+  return (
+    <div>
+      <ExportBar doc={doc} />
+      <div style={{ ...st.card, padding: 14, marginBottom: 14 }}>
+        <AccountPicker accounts={accounts} value={accId} onChange={setAccId} />
+        <RangePicker rs={rs} />
+      </div>
+      {data ? (
+        <>
+          <div style={{ ...st.card, padding: 16, marginBottom: 14, textAlign: "center" }}>
+            <div style={{ fontSize: 12, color: t.sub }}>مانده پایان دوره — {acc.name}</div>
+            <div style={{ fontSize: 24, fontWeight: 800, color: data.closing >= 0 ? BRAND.darkgreen : BRAND.crimson, marginTop: 4 }}>{toFaInt(data.closing)} <span style={{ fontSize: 12 }}>ریال</span></div>
+          </div>
+          <DocView doc={doc} />
+        </>
+      ) : <div style={{ textAlign: "center", color: t.sub, padding: 20 }}>ابتدا یک حساب تعریف کنید.</div>}
+    </div>
+  );
+}
+
+function IncomeExpenseReport({ accounts, transactions, categories }) {
   const st = useStyles();
+  const rs = useRangeState("month");
+  const { from, to } = rs.range;
+  const d = useMemo(() => {
+    const txs = transactions.filter((x) => x.date >= from && x.date <= to);
+    const inc = catTotals(txs, "income", categories), exp = catTotals(txs, "expense", categories);
+    const income = inc.reduce((s, x) => s + x.amount, 0), expense = exp.reduce((s, x) => s + x.amount, 0);
+    const accRows = accounts.map((a) => { const f = accountFlow(a, transactions, from, to); return [a.name, accTypeFa(a.type), f.income, -f.expense, balanceAtDate(a, transactions, to)]; });
+    return { inc, exp, income, expense, accRows };
+  }, [accounts, transactions, categories, from, to]);
+  const doc = {
+    title: "گزارش هزینه و درآمد", subtitle: `از ${jf(from)} تا ${jf(to)}`,
+    sections: [
+      { title: "خلاصه", rows: [["جمع درآمد", d.income], ["جمع هزینه", -d.expense], ["خالص (سود / زیان)", d.income - d.expense]] },
+      { title: "درآمد به تفکیک دسته", head: ["دسته", "مبلغ", "درصد"], rows: d.inc.map((c) => [c.name, c.amount, pctText(c.amount, d.income)]) },
+      { title: "هزینه به تفکیک دسته", head: ["دسته", "مبلغ", "درصد"], rows: d.exp.map((c) => [c.name, -c.amount, pctText(c.amount, d.expense)]) },
+      { title: "موجودی هر حساب در پایان بازه", head: ["حساب", "نوع", "دریافت", "پرداخت", "موجودی"], rows: d.accRows },
+    ],
+  };
+  return (
+    <div>
+      <ExportBar doc={doc} />
+      <div style={{ ...st.card, padding: 14, marginBottom: 14 }}><RangePicker rs={rs} /></div>
+      <DocView doc={{ sections: [doc.sections[0]] }} />
+      <PieBlock title="درآمد" data={d.inc} color={BRAND.darkgreen} />
+      <PieBlock title="هزینه" data={d.exp} color={BRAND.crimson} />
+      <DocView doc={{ sections: [doc.sections[3]] }} />
+    </div>
+  );
+}
+
+function BalancesReport({ accounts, transactions }) {
+  const st = useStyles(); const t = useT();
+  const rs = useRangeState("day");
+  const { from, to } = rs.range;
+  const rows = useMemo(() => accounts.map((a) => {
+    const opening = balanceAtDate(a, transactions, addDays(from, -1)), f = accountFlow(a, transactions, from, to);
+    return [a.name, accTypeFa(a.type), opening, f.income + f.tin, -(f.expense + f.tout), opening + f.income + f.tin - f.expense - f.tout];
+  }), [accounts, transactions, from, to]);
+  const sum = (i) => rows.reduce((s, r) => s + r[i], 0);
+  const doc = {
+    title: "گزارش مانده حساب‌ها", subtitle: `از ${jf(from)} تا ${jf(to)}`,
+    sections: [{ title: "همه‌ی حساب‌ها", head: ["حساب", "نوع", "مانده ابتدا", "دریافت", "پرداخت", "مانده پایان"], rows: [...rows, ["جمع کل", "", sum(2), sum(3), sum(4), sum(5)]] }],
+  };
+  return (
+    <div>
+      <ExportBar doc={doc} />
+      <div style={{ ...st.card, padding: 14, marginBottom: 14 }}><RangePicker rs={rs} /></div>
+      <div style={{ ...st.card, padding: 16, marginBottom: 14, textAlign: "center" }}>
+        <div style={{ fontSize: 12, color: t.sub }}>جمع مانده‌ی همه‌ی حساب‌ها در پایان بازه</div>
+        <div style={{ fontSize: 24, fontWeight: 800, color: sum(5) >= 0 ? BRAND.darkgreen : BRAND.crimson, marginTop: 4 }}>{toFaInt(sum(5))} <span style={{ fontSize: 12 }}>ریال</span></div>
+      </div>
+      <DocView doc={doc} />
+    </div>
+  );
+}
+
+function StatementReport({ accounts, transactions, categories, members, projects, events }) {
+  const st = useStyles(); const t = useT();
+  const rs = useRangeState("month");
+  const [accId, setAccId] = useState("__all");
+  const [opt, setOpt] = useState({ note: true, category: false, member: false, project: false, event: false, tags: false });
+  const { from, to } = rs.range;
+  const single = accId !== "__all" ? accounts.find((a) => a.id === accId) : null;
+  const nameOf = (list, id) => list.find((x) => x.id === id)?.name || "";
+  const doc = useMemo(() => {
+    const txs = transactions
+      .filter((x) => x.date >= from && x.date <= to && (!single || x.accountId === single.id || x.toAccountId === single.id))
+      .sort((a, b) => (a.date + (a.time || "") + (a.createdAt || "")).localeCompare(b.date + (b.time || "") + (b.createdAt || "")));
+    let bal = single ? balanceAtDate(single, transactions, addDays(from, -1)) : 0;
+    const opening = bal;
+    const head = ["تاریخ", "نوع", ...(single ? [] : ["حساب"]), "مبلغ", ...(single ? ["مانده"] : []),
+      ...(opt.note ? ["شرح"] : []), ...(opt.category ? ["دسته"] : []), ...(opt.member ? ["عضو خانواده"] : []),
+      ...(opt.project ? ["پروژه"] : []), ...(opt.event ? ["رویداد"] : []), ...(opt.tags ? ["برچسب"] : [])];
+    let inc = 0, exp = 0;
+    const rows = txs.map((x) => {
+      const typeFa = x.type === "income" ? "دریافت" : x.type === "expense" ? "پرداخت" : "انتقال";
+      let amount;
+      if (single) { const dlt = txDelta(x, single.id); bal += dlt; amount = dlt; if (dlt >= 0) inc += dlt; else exp += -dlt; }
+      else { amount = x.type === "income" ? x.amount : x.type === "expense" ? -x.amount : toFaInt(x.amount); if (x.type === "income") inc += x.amount; if (x.type === "expense") exp += x.amount; }
+      const accCell = x.type === "transfer" ? `${nameOf(accounts, x.accountId)} ← ${nameOf(accounts, x.toAccountId)}` : nameOf(accounts, x.accountId);
+      return [jf(x.date), typeFa, ...(single ? [] : [accCell]), amount, ...(single ? [bal] : []),
+        ...(opt.note ? [x.note || ""] : []), ...(opt.category ? [nameOf(categories, x.categoryId)] : []), ...(opt.member ? [nameOf(members, x.memberId)] : []),
+        ...(opt.project ? [nameOf(projects, x.projectId)] : []), ...(opt.event ? [nameOf(events, x.eventId)] : []), ...(opt.tags ? [(x.tags || []).join("، ")] : [])];
+    });
+    const sumRows = single
+      ? [["مانده ابتدای دوره", opening], ["جمع ورودی", inc], ["جمع خروجی", -exp], ["مانده پایان دوره", bal], ["تعداد تراکنش", toFaInt(txs.length)]]
+      : [["جمع دریافت‌ها", inc], ["جمع پرداخت‌ها", -exp], ["تعداد تراکنش", toFaInt(txs.length)]];
+    return {
+      title: `صورتحساب - ${single ? single.name : "همه حساب‌ها"}`, subtitle: `از ${jf(from)} تا ${jf(to)}`,
+      sections: [{ title: "جمع‌بندی", rows: sumRows }, { title: "ریز تراکنش‌ها", head, rows }],
+    };
+  }, [transactions, accounts, categories, members, projects, events, single, from, to, opt]);
+  const chips = [["note", "شرح"], ["category", "دسته"], ["member", "عضو خانواده"], ["project", "پروژه"], ["event", "رویداد"], ["tags", "برچسب"]];
+  return (
+    <div>
+      <ExportBar doc={doc} />
+      <div style={{ ...st.card, padding: 14, marginBottom: 14 }}>
+        <AccountPicker accounts={accounts} value={accId} onChange={setAccId} allowAll />
+        <RangePicker rs={rs} />
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: t.sub, marginBottom: 8 }}>نمایش در صورتحساب (با تیک زدن اضافه می‌شود)</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {chips.map(([k, l]) => (
+            <label key={k} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, padding: "6px 10px", borderRadius: 16, background: opt[k] ? `${BRAND.header}22` : t.input, cursor: "pointer", fontWeight: 600 }}>
+              <input type="checkbox" checked={opt[k]} onChange={() => setOpt((o) => ({ ...o, [k]: !o[k] }))} style={{ accentColor: BRAND.header }} />{l}
+            </label>
+          ))}
+        </div>
+      </div>
+      <DocView doc={doc} />
+    </div>
+  );
+}
+
+function BalanceSheetReport({ accounts, transactions, assets, debts, loans, checks, bills }) {
+  const st = useStyles(); const t = useT();
+  const [asOf, setAsOf] = useState(todayISO());
+  const doc = useMemo(() => {
+    const accRows = accounts.map((a) => [`${a.name} (${accTypeFa(a.type)})`, balanceAtDate(a, transactions, asOf)]);
+    const accTotal = accRows.reduce((s, r) => s + r[1], 0);
+    const assetRows = (assets || []).map((x) => [x.name || x.title || "دارایی", (Number(x.quantity) * Number(x.currentPrice)) || 0]).filter((r) => r[1]);
+    const receivable = (debts || []).filter((d) => !d.settled && d.kind === "receivable").reduce((s, d) => s + Number(d.amount || 0), 0);
+    const checksIn = (checks || []).filter((c) => c.status === "pending" && c.type === "received").reduce((s, c) => s + Number(c.amount || 0), 0);
+    const assetLines = [...accRows, ...assetRows, ["طلب‌ها (بدهکاران)", receivable], ["چک‌های دریافتی در جریان", checksIn]].filter((r, i) => i < accRows.length || r[1]);
+    const totalAssets = accTotal + assetRows.reduce((s, r) => s + r[1], 0) + receivable + checksIn;
+    const payable = (debts || []).filter((d) => !d.settled && d.kind === "payable").reduce((s, d) => s + Number(d.amount || 0), 0);
+    const loanRows = (loans || []).map((l) => [`وام: ${l.title}`, Math.max(0, Number(l.principal || 0) - (l.paidCount || 0) * Number(l.monthlyPayment || 0))]).filter((r) => r[1]);
+    const checksOut = (checks || []).filter((c) => c.status === "pending" && c.type !== "received").reduce((s, c) => s + Number(c.amount || 0), 0);
+    const unpaidBills = (bills || []).filter((b) => !b.paid).reduce((s, b) => s + Number(b.amount || 0), 0);
+    const liabLines = [["بدهی‌ها (بستانکاران)", payable], ...loanRows, ["چک‌های پرداختی در جریان", checksOut], ["قبض‌های پرداخت‌نشده", unpaidBills]].filter((r) => r[1]);
+    const totalLiab = liabLines.reduce((s, r) => s + r[1], 0);
+    return {
+      title: "ترازنامه", subtitle: `تا تاریخ ${jf(asOf)}`,
+      sections: [
+        { title: "دارایی‌ها", head: ["شرح", "مبلغ"], rows: [...assetLines, ["جمع دارایی‌ها", totalAssets]] },
+        { title: "بدهی‌ها", head: ["شرح", "مبلغ"], rows: [...liabLines, ["جمع بدهی‌ها", -totalLiab]] },
+        { title: "خالص دارایی (حقوق صاحب)", rows: [["دارایی‌ها − بدهی‌ها", totalAssets - totalLiab]] },
+      ],
+      net: totalAssets - totalLiab,
+    };
+  }, [accounts, transactions, assets, debts, loans, checks, bills, asOf]);
+  return (
+    <div>
+      <ExportBar doc={doc} />
+      <div style={{ ...st.card, padding: 14, marginBottom: 14 }}>
+        <label style={st.label}>تا تاریخ</label>
+        <JalaliDateInput value={asOf} onChange={setAsOf} style={st.input} />
+        {asOf !== todayISO() && <div style={{ fontSize: 11.5, color: t.sub }}>موجودی حساب‌ها تا همین تاریخ حساب می‌شود؛ دارایی‌ها، وام‌ها، چک‌ها و قبض‌ها وضعیت فعلی هستند.</div>}
+      </div>
+      <div style={{ ...st.card, padding: 16, marginBottom: 14, textAlign: "center" }}>
+        <div style={{ fontSize: 12, color: t.sub }}>خالص دارایی</div>
+        <div style={{ fontSize: 24, fontWeight: 800, color: doc.net >= 0 ? BRAND.darkgreen : BRAND.crimson, marginTop: 4 }}>{toFaInt(doc.net)} <span style={{ fontSize: 12 }}>ریال</span></div>
+      </div>
+      <DocView doc={doc} />
+    </div>
+  );
+}
+
+const REPORT_TILES = [
+  { key: "summary", title: "خلاصه گزارش", style: { bg: "#EAE7FB", fg: "#6C56C8", icons: [ClipboardList] } },
+  { key: "incexp", title: "گزارش هزینه و درآمد", style: { bg: "#B9FFF9", fg: "#14A39B", icons: [BarChart3] } },
+  { key: "balances", title: "گزارش مانده حساب‌ها", style: { bg: "#FFF3C8", fg: "#E0A800", icons: [Wallet] } },
+  { key: "statement", title: "گزارش صورتحساب", style: { bg: "#DDF4FF", fg: "#2F8FC4", icons: [ScrollText] } },
+  { key: "balsheet", title: "گزارش ترازنامه", style: { bg: "#FDE6F3", fg: "#D6489B", icons: [Scale] } },
+];
+function ReportTiles({ onOpen }) {
+  const t = useT();
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "16px 14px", marginBottom: 20 }}>
+      {REPORT_TILES.map((x) => (
+        <button key={x.key} onClick={() => onOpen(x.key)} style={{ border: 0, background: "transparent", padding: 0, minWidth: 0, display: "flex", flexDirection: "column", alignItems: "center", gap: 8, cursor: "pointer", fontFamily: "inherit" }}>
+          <span style={{ width: "100%", aspectRatio: "1 / 1", borderRadius: 20, background: x.style.bg, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <ShortcutGlyph style={x.style} size={38} />
+          </span>
+          <span style={{ fontSize: 12, fontWeight: 600, color: t.text, textAlign: "center", lineHeight: 1.6 }}>{x.title}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ReportsView({ members = [], events = [], projects = [], loans = [], assets = [], bills = [], categories = [], expenseByCategory, incomeByCategory, totalIncomeYear, totalExpenseYear, accounts, accountBalance, updateAccount, netWorthTrend, exportExcel, expenseByMember, expenseByEvent, expenseByProject, checks = [], debts = [], totalAssets = 0, currency, usdRate, transactions = [] }) {
+  const st = useStyles();
+  const [sub, setSub] = useState(null);
   const [period, setPeriod] = useState("year");
   const [selectedAccount, setSelectedAccount] = useState(null); const [selectedMember, setSelectedMember] = useState(null); const [editBalance, setEditBalance] = useState("");
   const periodTx = useMemo(() => {
@@ -3083,12 +3512,41 @@ function ReportsView({ categories = [], expenseByCategory, incomeByCategory, tot
     return { pending, cashed, bounced, pct };
   }, [checks]);
 
+  const periodLabel = { day: "روزانه", week: "هفتگی", month: "ماهیانه", year: "سالیانه" }[period];
+  const overviewDoc = {
+    title: `گزارش مالی ${periodLabel}`, subtitle: faLongDate(new Date()),
+    sections: [
+      { title: "تراز کلی مالی", rows: [
+        ["موجودی حساب‌ها", accounts.reduce((s2, a) => s2 + accountBalance(a.id), 0)], ["دارایی‌ها", totalAssets],
+        ["طلب‌ها", debts.filter((d) => !d.settled && d.kind === "receivable").reduce((s2, d) => s2 + Number(d.amount || 0), 0)],
+        ["بدهی‌ها", debts.filter((d) => !d.settled && d.kind === "payable").reduce((s2, d) => s2 + Number(d.amount || 0), 0)],
+        ["درآمد این دوره", reportIncome], ["هزینه این دوره", -reportExpense], ["سود / زیان خالص", profit]] },
+      { title: "هزینه به تفکیک دسته", head: ["دسته", "مبلغ"], rows: reportExpenseByCategory.map((x) => [x.name, x.amount]) },
+      { title: "موجودی حساب‌ها", head: ["حساب", "نوع", "موجودی"], rows: accounts.map((a) => [a.name, accTypeFa(a.type), accountBalance(a.id)]) },
+      { title: "تراکنش‌های این دوره", head: ["تاریخ", "نوع", "مبلغ", "دسته", "حساب", "یادداشت"], rows: [...periodTx].sort((x, y) => y.date.localeCompare(x.date)).map((x) => [jf(x.date), x.type === "income" ? "دریافت" : x.type === "expense" ? "پرداخت" : "انتقال", x.amount, categories.find((c) => c.id === x.categoryId)?.name || "", accounts.find((a) => a.id === x.accountId)?.name || "", x.note || ""]) },
+    ],
+  };
+  if (sub) {
+    const tile = REPORT_TILES.find((x) => x.key === sub);
+    const common = { accounts, transactions, categories };
+    return (
+      <div style={{ padding: "16px" }}>
+        <button onClick={() => setSub(null)} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 15, fontWeight: 800, color: "inherit", padding: 0, marginBottom: 14 }}>
+          <ChevronRight size={22} /> {tile?.title}
+        </button>
+        {sub === "summary" && <SummaryReport {...common} />}
+        {sub === "incexp" && <IncomeExpenseReport {...common} />}
+        {sub === "balances" && <BalancesReport {...common} />}
+        {sub === "statement" && <StatementReport {...common} members={members} projects={projects} events={events} />}
+        {sub === "balsheet" && <BalanceSheetReport {...common} assets={assets} debts={debts} loans={loans} checks={checks} bills={bills} />}
+      </div>
+    );
+  }
+
   return (
     <div style={{ padding: "16px" }}>
-      <div className="no-print" style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        <button onClick={exportExcel} style={{ ...st.primaryBtn, background: BRAND.green, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}><FileSpreadsheet size={16} /> خروجی Excel</button>
-        <button onClick={() => window.print()} style={{ ...st.primaryBtn, background: "#555", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}><Printer size={16} /> چاپ / PDF</button>
-      </div>
+      <ExportBar doc={overviewDoc} />
+      <ReportTiles onOpen={setSub} />
 
       <div className="no-print" style={{ display: "flex", gap: 6, marginBottom: 18, background: "#f1eef4", borderRadius: 10, padding: 4 }}>
         {[{ k: "day", l: "روزانه" }, { k: "week", l: "هفتگی" }, { k: "month", l: "ماهیانه" }, { k: "year", l: "سالیانه" }].map((p) => (
